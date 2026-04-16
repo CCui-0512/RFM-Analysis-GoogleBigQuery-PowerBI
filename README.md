@@ -36,46 +36,69 @@ The business sells products online. While total customer count is healthy, the c
 
 ## 🧱 SQL Pipeline (BigQuery)
 
-The pipeline runs entirely in BigQuery:
-
-```sql
-1. Combine monthly tables into a yearly fact table:
-   - `202501` to `202512` are merged into `sales_2025`
-2. Calculate RFM metrics for each customer:
-   - **Recency** = days since last order
-   - **Frequency** = number of orders
-   - **Monetary** = total order value
-3. Rank customers into deciles
-4. Create total RFM score
-5. Assign final customer segments
-
-## SQL Logic
-
 ### 1. Combine monthly tables
 All monthly sales tables are merged into one yearly table using `UNION ALL`.
 
-### 2. Compute RFM metrics
-For each `CustomerID`, the query calculates:
-- `recency`
-- `frequency`
-- `monetary`
+### 2. Calculate RFM(Recency, Frequency, Monetary) and RFM ranks; Combine views with CTEs
 
-### 3. Score customers
-Each metric is converted into decile scores:
-- `r_score`
-- `f_score`
-- `m_score`
+```sql
+-- Calculate RFM metrics
+rfm AS (
+  SELECT 
+    CustomerID,
+    MAX(OrderDate) AS last_order_date,
+    -- Recency: days since last purchase
+    DATE_DIFF(
+      (SELECT analysis_date FROM current_date),
+      MAX(OrderDate),
+      DAY
+    ) AS recency,
+    -- Frequency: number of orders
+    COUNT(*) AS frequency,
+    -- Monetary: total spending
+    SUM(OrderValue) AS monetary
+  FROM `rfm-analysis-493415.sales.sales_2025`
+  GROUP BY CustomerID
+)
+-- Add ranking
+SELECT
+  rfm.*,
+  -- Lower recency = better
+  ROW_NUMBER() OVER (ORDER BY recency ASC) AS r_rank,
+  -- Higher frequency = better
+  ROW_NUMBER() OVER (ORDER BY frequency DESC) AS f_rank,
+  -- Higher monetary = better
+  ROW_NUMBER() OVER (ORDER BY monetary DESC) AS m_rank
+FROM rfm;
+```
 
-### 4. Final segmentation
-Customers are assigned to business-friendly groups such as:
-- Champions
-- Loyal VIPs
-- Potential Loyalists
-- Engaged
-- Promising
-- Requires Attention
-- At Risk
-- Lost/Inactive
+### 3. RFM scoring (deciles)
+
+```sql
+CREATE OR REPLACE VIEW `rfm-analysis-493415.sales.rfm_scores` AS
+SELECT 
+    *,
+    NTILE(10) OVER (ORDER BY r_rank DESC) AS r_score,
+    NTILE(10) OVER (ORDER BY f_rank DESC) AS f_score,
+    NTILE(10) OVER (ORDER BY m_rank DESC) AS m_score
+FROM `rfm-analysis-493415.sales.rfm_metrics`;
+```
+
+### 4. Total RFM score
+
+```sql
+CREATE OR REPLACE VIEW `rfm-analysis-493415.sales.rfm_total_scores` AS
+SELECT 
+    CustomerID,
+    recency,
+    frequency,
+    monetary,
+    r_score,
+    f_score,
+    m_score,
+    (r_score + f_score + m_score) AS rfm_total_score
+FROM `rfm-analysis-493415.sales.rfm_scores`;
+```
 
 ## Dashboard Preview
 
